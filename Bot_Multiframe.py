@@ -125,77 +125,89 @@ class CryptoMonitorApp(QMainWindow):
         return ""
 
     def update_table(self):
-        self.monitoring_table.setRowCount(len(self.coins))
-        self.monitoring_table.setColumnCount(4 + len(self.indicators))
+        try:
+            num_columns = 4 + len(self.indicators)  # Moneda, Tendencia, Acción + Indicadores + Tendencia General
+            self.monitoring_table.setRowCount(len(self.coins))
+            self.monitoring_table.setColumnCount(num_columns)
 
-        self.monitoring_table.setHorizontalHeaderItem(2, QTableWidgetItem("Moneda"))
-        self.monitoring_table.setHorizontalHeaderItem(3 + len(self.indicators), QTableWidgetItem("Tendencia"))
+            # Configurar cabeceras generales
+            self.monitoring_table.setHorizontalHeaderItem(2, QTableWidgetItem("Moneda"))
+            self.monitoring_table.setHorizontalHeaderItem(num_columns - 1, QTableWidgetItem("Tendencia"))
 
-        for col, indicator in enumerate(self.indicators, start=3):
-            if indicator["name"] == "EMA":
-                period = indicator["parameters"].split(": ")[1]
-                header_text = f"EMA ({period})\n{indicator['timeframe']}"
-            elif indicator["name"] == "MACD":
-                fast, slow, signal = [x.split(": ")[1] for x in indicator["parameters"].split(", ")]
-                header_text = f"MACD\n({fast}, {slow}, {signal})\n{indicator['timeframe']}"
-            else:
-                header_text = indicator["name"]
-
-            header_item = QTableWidgetItem(header_text)
-            self.monitoring_table.setHorizontalHeaderItem(col, header_item)
-
-        for row, coin in enumerate(self.coins):
-            delete_button = QPushButton()
-            delete_button.setIcon(qta.icon("mdi.delete"))
-            delete_button.clicked.connect(lambda _, r=row: self.remove_coin(r))
-            self.monitoring_table.setCellWidget(row, 0, delete_button)
-
-            web_button = QPushButton()
-            web_button.setIcon(qta.icon("mdi.web"))
-            web_button.clicked.connect(lambda _, c=coin["name"]: self.open_web_page(c))
-            self.monitoring_table.setCellWidget(row, 1, web_button)
-
-            self.monitoring_table.setItem(row, 2, QTableWidgetItem(coin["name"]))
-
-            indicator_states = []
+            # Configurar cabeceras dinámicas para indicadores
             for col, indicator in enumerate(self.indicators, start=3):
-                interval = self.map_interval(indicator["timeframe"])
-                if interval is None:
-                    self.monitoring_table.setItem(row, col, QTableWidgetItem("Intervalo Inválido"))
-                    indicator_states.append("Error")
-                    continue
-
-                coin_data = self.fetch_historical_data(coin["name"], interval)
-                if coin_data is None:
-                    self.monitoring_table.setItem(row, col, QTableWidgetItem("Error"))
-                    indicator_states.append("Error")
-                    continue
-
                 if indicator["name"] == "EMA":
-                    period = int(indicator["parameters"].split(": ")[1])
-                    ema = ta.ema(coin_data["close"], length=period)
-                    last_close = coin_data["close"].iloc[-1]
-                    last_ema = ema.iloc[-1]
-                    state = "Alcista" if last_close > last_ema else "Bajista"
+                    period = indicator["parameters"].split(": ")[1]
+                    header_text = f"EMA ({period})\n{indicator['timeframe']}"
                 elif indicator["name"] == "MACD":
-                    fast, slow, signal = map(int, [x.split(": ")[1] for x in indicator["parameters"].split(", ")])
-                    macd = ta.macd(coin_data["close"], fast=fast, slow=slow, signal=signal)
-                    state = "Alcista" if macd["MACD_12_26_9"].iloc[-1] > macd["MACDs_12_26_9"].iloc[-1] else "Bajista"
+                    fast, slow, signal = [x.split(": ")[1] for x in indicator["parameters"].split(", ")]
+                    header_text = f"MACD\n({fast}, {slow}, {signal})\n{indicator['timeframe']}"
                 else:
-                    state = "Error"
+                    header_text = indicator["name"]
 
-                self.monitoring_table.setItem(row, col, QTableWidgetItem(state))
-                indicator_states.append(state)
+                header_item = QTableWidgetItem(header_text)
+                self.monitoring_table.setHorizontalHeaderItem(col, header_item)
 
-            if all(state == "Alcista" for state in indicator_states):
-                trend = "Alcista"
-            elif all(state == "Bajista" for state in indicator_states):
-                trend = "Bajista"
-            else:
-                trend = "Neutral"
-            self.monitoring_table.setItem(row, len(self.indicators) + 3, QTableWidgetItem(trend))
+            # Configurar filas y contenido
+            for row, coin in enumerate(self.coins):
+                # Botón de eliminar
+                delete_button = QPushButton()
+                delete_button.setIcon(qta.icon("mdi.delete"))
+                delete_button.clicked.connect(lambda _, r=row: self.remove_coin(r))
+                self.monitoring_table.setCellWidget(row, 0, delete_button)
 
-        self.monitoring_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+                # Botón para abrir web
+                web_button = QPushButton()
+                web_button.setIcon(qta.icon("mdi.web"))
+                web_button.clicked.connect(lambda _, c=coin["name"]: self.open_web_page(c))
+                self.monitoring_table.setCellWidget(row, 1, web_button)
+
+                # Nombre de la moneda
+                self.monitoring_table.setItem(row, 2, QTableWidgetItem(coin["name"]))
+
+                # Calcular indicadores
+                indicator_states = []
+                for col, indicator in enumerate(self.indicators, start=3):
+                    interval = self.map_interval(indicator["timeframe"])
+                    if not interval:
+                        self.monitoring_table.setItem(row, col, QTableWidgetItem("Intervalo Inválido"))
+                        indicator_states.append("Error")
+                        continue
+
+                    coin_data = self.fetch_historical_data(coin["name"], interval)
+                    if coin_data is None or coin_data.empty:
+                        self.monitoring_table.setItem(row, col, QTableWidgetItem("Error"))
+                        indicator_states.append("Error")
+                        continue
+
+                    if indicator["name"] == "EMA":
+                        period = int(indicator["parameters"].split(": ")[1])
+                        ema = ta.ema(coin_data["close"], length=period)
+                        state = "Alcista" if coin_data["close"].iloc[-1] > ema.iloc[-1] else "Bajista"
+                    elif indicator["name"] == "MACD":
+                        fast, slow, signal = map(int, [x.split(": ")[1] for x in indicator["parameters"].split(", ")])
+                        macd = ta.macd(coin_data["close"], fast=fast, slow=slow, signal=signal)
+                        state = "Alcista" if macd["MACD_12_26_9"].iloc[-1] > macd["MACDs_12_26_9"].iloc[
+                            -1] else "Bajista"
+                    else:
+                        state = "Error"
+
+                    self.monitoring_table.setItem(row, col, QTableWidgetItem(state))
+                    indicator_states.append(state)
+
+                # Determinar tendencia general
+                if all(state == "Alcista" for state in indicator_states):
+                    trend = "Alcista"
+                elif all(state == "Bajista" for state in indicator_states):
+                    trend = "Bajista"
+                else:
+                    trend = "Neutral"
+                self.monitoring_table.setItem(row, num_columns - 1, QTableWidgetItem(trend))
+
+            self.monitoring_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+
+        except Exception as e:
+            self.show_message("Error", f"Se produjo un error al actualizar la tabla: {str(e)}")
 
     def fetch_historical_data(self, coin, interval):
         try:
@@ -268,7 +280,7 @@ class CryptoMonitorApp(QMainWindow):
             if not period.isdigit():
                 self.show_message("Error", "Por favor, ingresa un período válido.")
                 return
-            period = int(period)  # Convertimos a entero
+            period = int(period)
             if period > 500:
                 self.show_message("Error", "El período no puede ser mayor a 500.")
                 return
@@ -280,7 +292,7 @@ class CryptoMonitorApp(QMainWindow):
             if not (fast.isdigit() and slow.isdigit() and signal.isdigit()):
                 self.show_message("Error", "Por favor, ingresa todos los parámetros del MACD.")
                 return
-            fast, slow, signal = int(fast), int(slow), int(signal)  # Convertimos a enteros
+            fast, slow, signal = int(fast), int(slow), int(signal)
             if fast > 500 or slow > 500 or signal > 500:
                 self.show_message("Error", "Los períodos del MACD no pueden ser mayores a 500.")
                 return
@@ -298,11 +310,11 @@ class CryptoMonitorApp(QMainWindow):
         else:
             self.indicators.append(indicator_data)
 
-        self.update_indicator_table()
+        self.update_indicator_table()  # Actualizar tabla de configuración
+        self.save_indicators_to_file()  # Guardar indicadores
+        self.update_table()  # Forzar actualización de la tabla de monitoreo
         self.reset_fields()
         self.editing_row = None
-        self.save_indicators_to_file()
-        self.update_table()
 
     def save_indicators_to_file(self):
         try:
@@ -508,7 +520,7 @@ class CryptoMonitorApp(QMainWindow):
         mapping = {
             "5m": "Min5",
             "15m": "Min15",
-            "1h": "Hour1",
+            "1h": "Min60",
             "4h": "Hour4",
             "1d": "Day1"
         }
