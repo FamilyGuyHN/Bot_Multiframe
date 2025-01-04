@@ -1,15 +1,15 @@
-import pygame
+import json
+import sys
+from datetime import datetime, timedelta
+
 import pandas as pd
 import pandas_ta as ta
-from datetime import datetime, timezone, timedelta
-import sys
-import requests
-from PySide6.QtWidgets import QApplication, QMainWindow, QTabWidget, QWidget, QVBoxLayout, QPushButton, QTableWidget, \
-    QTableWidgetItem, QLineEdit, QComboBox, QMessageBox, QHeaderView, QStyle, QLabel
-from PySide6.QtGui import QIcon
-from PySide6.QtCore import Qt
-import json
+import pygame
 import qtawesome as qta
+import requests
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtWidgets import QApplication, QMainWindow, QTabWidget, QWidget, QVBoxLayout, QPushButton, QTableWidget, \
+    QTableWidgetItem, QLineEdit, QComboBox, QMessageBox, QHeaderView, QLabel
 
 pygame.mixer.init()
 
@@ -122,6 +122,8 @@ class CryptoMonitorApp(QMainWindow):
         self.load_coins_from_file()  # Cargar monedas al iniciar
         self.load_indicators_from_file()  # Cargar indicadores al iniciar
 
+        self.timers = {}  # Un diccionario para manejar los temporizadores por temporalidad
+
     def get_indicator_parameters(self, indicator):
         if "EMA" in indicator["name"]:
             period = indicator["parameters"].split(": ")[1]
@@ -143,14 +145,14 @@ class CryptoMonitorApp(QMainWindow):
                 self.monitoring_table.setRowCount(1)
                 self.monitoring_table.setColumnCount(1)
                 self.monitoring_table.setHorizontalHeaderLabels(["Mensaje"])
-                msg_item = QTableWidgetItem("Por favor, agrega una moneda.")
-                self.monitoring_table.setItem(0, 0, msg_item)
-
-                # Botón para llevar a la sección de búsqueda
                 add_coin_button = QPushButton("Agregar moneda")
                 add_coin_button.clicked.connect(
                     lambda: self.tab_widget.setCurrentIndex(1))  # Ir a la pestaña de búsqueda
-                self.monitoring_table.setCellWidget(0, 0, add_coin_button)
+                widget = QWidget()
+                layout = QVBoxLayout(widget)
+                layout.addWidget(QLabel("Por favor, agrega una moneda."))
+                layout.addWidget(add_coin_button)
+                self.monitoring_table.setCellWidget(0, 0, widget)
                 return
 
             # Caso 2: Hay monedas, pero no indicadores
@@ -187,14 +189,14 @@ class CryptoMonitorApp(QMainWindow):
                 self.monitoring_table.setRowCount(1)
                 self.monitoring_table.setColumnCount(1)
                 self.monitoring_table.setHorizontalHeaderLabels(["Mensaje"])
-                msg_item = QTableWidgetItem("Por favor, agrega una moneda.")
-                self.monitoring_table.setItem(0, 0, msg_item)
-
-                # Botón para llevar a la sección de búsqueda
                 add_coin_button = QPushButton("Agregar moneda")
                 add_coin_button.clicked.connect(
                     lambda: self.tab_widget.setCurrentIndex(1))  # Ir a la pestaña de búsqueda
-                self.monitoring_table.setCellWidget(0, 0, add_coin_button)
+                widget = QWidget()
+                layout = QVBoxLayout(widget)
+                layout.addWidget(QLabel("Por favor, agrega una moneda."))
+                layout.addWidget(add_coin_button)
+                self.monitoring_table.setCellWidget(0, 0, widget)
                 return
 
             # Caso 4: Hay monedas e indicadores
@@ -281,7 +283,6 @@ class CryptoMonitorApp(QMainWindow):
                     max_label = QLabel("Máximo alcanzado")
                     max_label.setAlignment(Qt.AlignCenter)
                     self.monitoring_table.setCellWidget(row, num_columns - 1, max_label)
-
 
         except Exception as e:
             self.show_message("Error", f"Se produjo un error al actualizar la tabla: {str(e)}")
@@ -386,6 +387,10 @@ class CryptoMonitorApp(QMainWindow):
             self.indicators[row] = indicator_data
         else:
             self.indicators.append(indicator_data)
+
+        # Configurar el temporizador para la temporalidad del indicador
+        if timeframe not in self.timers:
+            self.setup_timer_for_timeframe(timeframe)
 
         self.update_indicator_table()  # Actualizar tabla de configuración
         self.save_indicators_to_file()  # Guardar indicadores
@@ -602,6 +607,47 @@ class CryptoMonitorApp(QMainWindow):
             "1d": "Day1"
         }
         return mapping.get(interval)
+
+    def get_time_to_next_candle(self, timeframe):
+        now = datetime.now()
+        if timeframe == "5m":
+            next_candle = now + timedelta(minutes=5 - now.minute % 5, seconds=-now.second,
+                                          microseconds=-now.microsecond)
+        elif timeframe == "15m":
+            next_candle = now + timedelta(minutes=15 - now.minute % 15, seconds=-now.second,
+                                          microseconds=-now.microsecond)
+        elif timeframe == "1h":
+            next_candle = now + timedelta(hours=1, minutes=-now.minute, seconds=-now.second,
+                                          microseconds=-now.microsecond)
+        elif timeframe == "4h":
+            next_candle = now + timedelta(hours=4 - now.hour % 4, minutes=-now.minute, seconds=-now.second,
+                                          microseconds=-now.microsecond)
+        elif timeframe == "1d":
+            next_candle = datetime.combine(now + timedelta(days=1), datetime.min.time())
+        else:
+            return None
+        return (next_candle - now).total_seconds() * 1000  # Devuelve el tiempo en milisegundos
+
+    def setup_timer_for_timeframe(self, timeframe):
+        if timeframe in self.timers:
+            self.timers[timeframe].stop()  # Detener el temporizador si ya existía
+
+        time_to_next_candle = self.get_time_to_next_candle(timeframe)
+        if time_to_next_candle is not None:
+            timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.timeout.connect(lambda: self.handle_candle_close(timeframe))
+            timer.start(time_to_next_candle)
+            self.timers[timeframe] = timer
+
+    def handle_candle_close(self, timeframe):
+        # Realiza los cálculos solo para los indicadores de esta temporalidad
+        relevant_indicators = [ind for ind in self.indicators if ind["timeframe"] == timeframe]
+        if relevant_indicators:
+            self.update_table()  # Actualiza la tabla con los cálculos
+
+        # Programar el siguiente cierre de vela
+        self.setup_timer_for_timeframe(timeframe)
 
     def show_message(self, title, text):
         msg = QMessageBox(self)
