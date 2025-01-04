@@ -1,14 +1,24 @@
+import pygame
 import pandas as pd
 import pandas_ta as ta
 from datetime import datetime, timezone, timedelta
 import sys
 import requests
 from PySide6.QtWidgets import QApplication, QMainWindow, QTabWidget, QWidget, QVBoxLayout, QPushButton, QTableWidget, \
-    QTableWidgetItem, QLineEdit, QComboBox, QMessageBox, QHeaderView, QStyle
+    QTableWidgetItem, QLineEdit, QComboBox, QMessageBox, QHeaderView, QStyle, QLabel
 from PySide6.QtGui import QIcon
 from PySide6.QtCore import Qt
 import json
 import qtawesome as qta
+
+pygame.mixer.init()
+
+def play_sound(sound_file):
+    try:
+        pygame.mixer.music.load(sound_file)
+        pygame.mixer.music.play()
+    except Exception as e:
+        QMessageBox.warning(None, "Error de sonido", f"No se pudo reproducir el sonido: {str(e)}")
 
 
 class CryptoMonitorApp(QMainWindow):
@@ -126,29 +136,77 @@ class CryptoMonitorApp(QMainWindow):
 
     def update_table(self):
         try:
-            num_columns = 4 + len(self.indicators)  # Moneda, Tendencia, Acción + Indicadores + Tendencia General
+            self.monitoring_table.clear()  # Limpia la tabla antes de configurarla
+
+            # Caso 1: No hay monedas ni indicadores
+            if not self.coins and not self.indicators:
+                self.monitoring_table.setRowCount(1)
+                self.monitoring_table.setColumnCount(1)
+                self.monitoring_table.setHorizontalHeaderLabels(["Mensaje"])
+                msg_item = QTableWidgetItem("Por favor, agrega una moneda.")
+                self.monitoring_table.setItem(0, 0, msg_item)
+
+                # Botón para llevar a la sección de búsqueda
+                add_coin_button = QPushButton("Agregar moneda")
+                add_coin_button.clicked.connect(
+                    lambda: self.tab_widget.setCurrentIndex(1))  # Ir a la pestaña de búsqueda
+                self.monitoring_table.setCellWidget(0, 0, add_coin_button)
+                return
+
+            # Caso 2: Hay monedas, pero no indicadores
+            if self.coins and not self.indicators:
+                self.monitoring_table.setRowCount(len(self.coins))
+                self.monitoring_table.setColumnCount(4)
+                self.monitoring_table.setHorizontalHeaderLabels(["", "", "Moneda", "Agregar Indicador"])
+
+                for row, coin in enumerate(self.coins):
+                    # Botón de eliminar
+                    delete_button = QPushButton()
+                    delete_button.setIcon(qta.icon("mdi.delete"))
+                    delete_button.clicked.connect(lambda _, r=row: self.remove_coin(r))
+                    self.monitoring_table.setCellWidget(row, 0, delete_button)
+
+                    # Botón para abrir web
+                    web_button = QPushButton()
+                    web_button.setIcon(qta.icon("mdi.web"))
+                    web_button.clicked.connect(lambda _, c=coin["name"]: self.open_web_page(c))
+                    self.monitoring_table.setCellWidget(row, 1, web_button)
+
+                    # Nombre de la moneda
+                    self.monitoring_table.setItem(row, 2, QTableWidgetItem(coin["name"]))
+
+                    # Botón para agregar indicador
+                    add_indicator_button = QPushButton("Agregar indicador")
+                    add_indicator_button.clicked.connect(
+                        lambda: self.tab_widget.setCurrentIndex(2))  # Ir a configuración
+                    self.monitoring_table.setCellWidget(row, 3, add_indicator_button)
+                return
+
+            # Caso 3: Hay indicadores, pero no hay monedas
+            if not self.coins and self.indicators:
+                self.monitoring_table.setRowCount(1)
+                self.monitoring_table.setColumnCount(1)
+                self.monitoring_table.setHorizontalHeaderLabels(["Mensaje"])
+                msg_item = QTableWidgetItem("Por favor, agrega una moneda.")
+                self.monitoring_table.setItem(0, 0, msg_item)
+
+                # Botón para llevar a la sección de búsqueda
+                add_coin_button = QPushButton("Agregar moneda")
+                add_coin_button.clicked.connect(
+                    lambda: self.tab_widget.setCurrentIndex(1))  # Ir a la pestaña de búsqueda
+                self.monitoring_table.setCellWidget(0, 0, add_coin_button)
+                return
+
+            # Caso 4: Hay monedas e indicadores
+            num_columns = 4 + len(self.indicators) + 1  # Moneda, Acción, Indicadores, Tendencia, Agregar Indicador
             self.monitoring_table.setRowCount(len(self.coins))
             self.monitoring_table.setColumnCount(num_columns)
 
-            # Configurar cabeceras generales
-            self.monitoring_table.setHorizontalHeaderItem(2, QTableWidgetItem("Moneda"))
-            self.monitoring_table.setHorizontalHeaderItem(num_columns - 1, QTableWidgetItem("Tendencia"))
+            # Configuración de cabeceras
+            header_labels = ["", "", "Moneda"] + [f"{ind['name']} ({ind['timeframe']})" for ind in self.indicators] + [
+                "Tendencia", "Agregar Indicador"]
+            self.monitoring_table.setHorizontalHeaderLabels(header_labels)
 
-            # Configurar cabeceras dinámicas para indicadores
-            for col, indicator in enumerate(self.indicators, start=3):
-                if indicator["name"] == "EMA":
-                    period = indicator["parameters"].split(": ")[1]
-                    header_text = f"EMA ({period})\n{indicator['timeframe']}"
-                elif indicator["name"] == "MACD":
-                    fast, slow, signal = [x.split(": ")[1] for x in indicator["parameters"].split(", ")]
-                    header_text = f"MACD\n({fast}, {slow}, {signal})\n{indicator['timeframe']}"
-                else:
-                    header_text = indicator["name"]
-
-                header_item = QTableWidgetItem(header_text)
-                self.monitoring_table.setHorizontalHeaderItem(col, header_item)
-
-            # Configurar filas y contenido
             for row, coin in enumerate(self.coins):
                 # Botón de eliminar
                 delete_button = QPushButton()
@@ -165,7 +223,7 @@ class CryptoMonitorApp(QMainWindow):
                 # Nombre de la moneda
                 self.monitoring_table.setItem(row, 2, QTableWidgetItem(coin["name"]))
 
-                # Calcular indicadores
+                # Cálculo de indicadores
                 indicator_states = []
                 for col, indicator in enumerate(self.indicators, start=3):
                     interval = self.map_interval(indicator["timeframe"])
@@ -202,9 +260,28 @@ class CryptoMonitorApp(QMainWindow):
                     trend = "Bajista"
                 else:
                     trend = "Neutral"
-                self.monitoring_table.setItem(row, num_columns - 1, QTableWidgetItem(trend))
 
-            self.monitoring_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+                # Mostrar tendencia
+                self.monitoring_table.setItem(row, num_columns - 2, QTableWidgetItem(trend))
+
+                # Alerta visual y sonora solo para "Alcista" o "Bajista"
+                if trend in ["Alcista", "Bajista"]:
+                    alert_message = f"La tendencia para {coin['name']} es {trend}."
+                    QMessageBox.information(self, "Alerta de Tendencia", alert_message)
+                    sound_file = "alert.wav"  # Ruta al archivo de sonido
+                    play_sound(sound_file)
+
+                # Botón para agregar indicador (solo si hay menos de 6 indicadores)
+                if len(self.indicators) < 6:
+                    add_indicator_button = QPushButton("Agregar indicador")
+                    add_indicator_button.clicked.connect(
+                        lambda: self.tab_widget.setCurrentIndex(2))  # Ir a configuración
+                    self.monitoring_table.setCellWidget(row, num_columns - 1, add_indicator_button)
+                else:
+                    max_label = QLabel("Máximo alcanzado")
+                    max_label.setAlignment(Qt.AlignCenter)
+                    self.monitoring_table.setCellWidget(row, num_columns - 1, max_label)
+
 
         except Exception as e:
             self.show_message("Error", f"Se produjo un error al actualizar la tabla: {str(e)}")
