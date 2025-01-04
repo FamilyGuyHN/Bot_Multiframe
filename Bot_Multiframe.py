@@ -28,6 +28,8 @@ class CryptoMonitorApp(QMainWindow):
         self.setWindowTitle("Crypto Monitor")
         self.setGeometry(100, 100, 800, 600)
 
+        self.timers = {}  # Inicializar timers antes de cargar indicadores y monedas
+
         main_layout = QVBoxLayout()
         main_widget = QWidget()
         main_widget.setLayout(main_layout)
@@ -121,8 +123,6 @@ class CryptoMonitorApp(QMainWindow):
         # Cargar monedas guardadas y configuraciones
         self.load_coins_from_file()  # Cargar monedas al iniciar
         self.load_indicators_from_file()  # Cargar indicadores al iniciar
-
-        self.timers = {}  # Un diccionario para manejar los temporizadores por temporalidad
 
     def get_indicator_parameters(self, indicator):
         if "EMA" in indicator["name"]:
@@ -411,6 +411,10 @@ class CryptoMonitorApp(QMainWindow):
                 self.indicators = json.load(file)
                 self.update_indicator_table()  # Actualiza la tabla de indicadores
                 self.update_table()  # Actualiza la tabla de monitoreo
+
+                # Configurar temporizadores para cada temporalidad
+                for indicator in self.indicators:
+                    self.setup_timer_for_timeframe(indicator["timeframe"])
         except FileNotFoundError:
             self.indicators = []  # Si no existe el archivo, inicia con una lista vacía
         except Exception as e:
@@ -641,10 +645,9 @@ class CryptoMonitorApp(QMainWindow):
             self.timers[timeframe] = timer
 
     def handle_candle_close(self, timeframe):
-        # Realiza los cálculos solo para los indicadores de esta temporalidad
         relevant_indicators = [ind for ind in self.indicators if ind["timeframe"] == timeframe]
         if relevant_indicators:
-            self.update_table()  # Actualiza la tabla con los cálculos
+            self.update_table()
 
         # Programar el siguiente cierre de vela
         self.setup_timer_for_timeframe(timeframe)
