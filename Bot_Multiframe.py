@@ -26,9 +26,14 @@ class CryptoMonitorApp(QMainWindow):
         super().__init__()
 
         self.setWindowTitle("Crypto Monitor")
-        self.setGeometry(100, 100, 800, 600)
+        self.setGeometry(100, 100, 1000, 600)
 
-        self.timers = {}  # Inicializar timers antes de cargar indicadores y monedas
+        self.timers = {}  # Temporizadores para cada temporalidad
+        self.alert_states = {}  # Diccionario para almacenar el estado de las alertas
+        self.alert_cooldown = False  # Estado de enfriamiento para las alertas
+        self.alert_cooldown_timer = QTimer(self)  # Temporizador de enfriamiento
+        self.alert_cooldown_timer.setSingleShot(True)
+        self.alert_cooldown_timer.timeout.connect(self.reset_alert_cooldown)
 
         main_layout = QVBoxLayout()
         main_widget = QWidget()
@@ -124,17 +129,23 @@ class CryptoMonitorApp(QMainWindow):
         self.load_coins_from_file()  # Cargar monedas al iniciar
         self.load_indicators_from_file()  # Cargar indicadores al iniciar
 
-    def get_indicator_parameters(self, indicator):
-        if "EMA" in indicator["name"]:
-            period = indicator["parameters"].split(": ")[1]
-            return f"{period} periodos"
-        elif "MACD" in indicator["name"]:
-            params = indicator["parameters"].split(", ")
-            fast = params[0].split(": ")[1]
-            slow = params[1].split(": ")[1]
-            signal = params[2].split(": ")[1]
-            return f"{fast}, {slow}, {signal}"
-        return ""
+    def add_coin_to_monitoring(self, coin):
+        if not any(c["name"] == coin for c in self.coins):  # Evitar duplicados
+            self.coins.append({"name": coin})
+            self.save_coins_to_file()  # Guardar las monedas en el archivo
+            self.update_table()  # Actualizar la tabla de monitoreo
+        else:
+            self.show_message("Advertencia", f"La moneda {coin} ya está en la lista de monitoreo.")
+
+    def save_coins_to_file(self):
+        try:
+            with open("coins.json", "w") as file:
+                json.dump(self.coins, file)
+        except Exception as e:
+            self.show_message("Error", f"No se pudo guardar las monedas: {e}")
+
+    def reset_alert_cooldown(self):
+        self.alert_cooldown = False
 
     def update_table(self):
         try:
@@ -266,12 +277,21 @@ class CryptoMonitorApp(QMainWindow):
                 # Mostrar tendencia
                 self.monitoring_table.setItem(row, num_columns - 2, QTableWidgetItem(trend))
 
-                # Alerta visual y sonora solo para "Alcista" o "Bajista"
-                if trend in ["Alcista", "Bajista"]:
-                    alert_message = f"La tendencia para {coin['name']} es {trend}."
+                # Verificar si la tendencia ha cambiado y si el enfriamiento está activo
+                coin_name = coin["name"]
+                if coin_name not in self.alert_states:
+                    self.alert_states[coin_name] = {"last_trend": None}
+
+                last_trend = self.alert_states[coin_name]["last_trend"]
+                print(f"Tendencia para {coin_name}: {trend} (Última tendencia: {last_trend})")  # Depuración
+                if trend != last_trend and trend in ["Alcista", "Bajista"] and not self.alert_cooldown:
+                    alert_message = f"La tendencia para {coin_name} es {trend}."
                     QMessageBox.information(self, "Alerta de Tendencia", alert_message)
                     sound_file = "alert.wav"  # Ruta al archivo de sonido
                     play_sound(sound_file)
+                    self.alert_states[coin_name]["last_trend"] = trend  # Actualizar el estado de la alerta
+                    self.alert_cooldown = True
+                    self.alert_cooldown_timer.start(60000)  # 60 segundos de enfriamiento
 
                 # Botón para agregar indicador (solo si hay menos de 6 indicadores)
                 if len(self.indicators) < 6:
@@ -304,34 +324,6 @@ class CryptoMonitorApp(QMainWindow):
             return None
         except Exception as e:
             return None
-
-    def add_coin_to_monitoring(self, coin):
-        if coin not in [c["name"] for c in self.coins]:
-            self.coins.append({"name": coin, "trend": "Neutral"})
-            self.update_table()
-            self.save_coins_to_file()  # Guardar monedas
-            self.show_message("Éxito", f"La moneda {coin} fue agregada al monitoreo.")
-        else:
-            self.show_message("Información", f"La moneda {coin} ya está en monitoreo.")
-
-    def remove_coin(self, row):
-        confirm = QMessageBox.question(
-            self,
-            "Confirmación",
-            "¿Estás seguro de que deseas eliminar esta moneda?",
-            QMessageBox.Yes | QMessageBox.No
-        )
-        if confirm == QMessageBox.Yes:
-            self.coins.pop(row)
-            self.update_table()
-            self.save_coins_to_file()  # Guardar monedas
-
-    def save_coins_to_file(self):
-        try:
-            with open("coins.json", "w") as file:
-                json.dump(self.coins, file)
-        except Exception as e:
-            self.show_message("Error", f"No se pudo guardar las monedas: {e}")
 
     def save_indicator(self):
         if hasattr(self, "editing_row") and self.editing_row is not None:
