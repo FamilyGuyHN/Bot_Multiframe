@@ -137,6 +137,18 @@ class CryptoMonitorApp(QMainWindow):
         else:
             self.show_message("Advertencia", f"La moneda {coin} ya está en la lista de monitoreo.")
 
+    def remove_coin(self, row):
+        confirm = QMessageBox.question(
+            self,
+            "Confirmación",
+            "¿Deseás eliminar esta moneda del monitoreo?",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        if confirm == QMessageBox.Yes:
+            self.coins.pop(row)
+            self.save_coins_to_file()
+            self.update_table()
+
     def save_coins_to_file(self):
         try:
             with open("coins.json", "w") as file:
