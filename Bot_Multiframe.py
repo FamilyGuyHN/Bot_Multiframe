@@ -1,5 +1,6 @@
 import json
 import sys
+import threading
 from datetime import datetime, timedelta
 
 import pandas as pd
@@ -266,12 +267,11 @@ class CryptoMonitorApp(QMainWindow):
                     if indicator["name"] == "EMA":
                         period = int(indicator["parameters"].split(": ")[1])
                         ema = ta.ema(coin_data["close"], length=period)
-                        state = "Alcista" if coin_data["close"].iloc[-1] > ema.iloc[-1] else "Bajista"
+                        state = "Alcista" if coin_data["close"].iloc[-2] > ema.iloc[-2] else "Bajista"
                     elif indicator["name"] == "MACD":
                         fast, slow, signal = map(int, [x.split(": ")[1] for x in indicator["parameters"].split(", ")])
                         macd = ta.macd(coin_data["close"], fast=fast, slow=slow, signal=signal)
-                        state = "Alcista" if macd["MACD_12_26_9"].iloc[-1] > macd["MACDs_12_26_9"].iloc[
-                            -1] else "Bajista"
+                        state = "Alcista" if macd["MACD_12_26_9"].iloc[-2] > macd["MACDs_12_26_9"].iloc[-2] else "Bajista"
                     else:
                         state = "Error"
 
@@ -298,12 +298,12 @@ class CryptoMonitorApp(QMainWindow):
                 print(f"Tendencia para {coin_name}: {trend} (Última tendencia: {last_trend})")  # Depuración
                 if trend != last_trend and trend in ["Alcista", "Bajista"] and not self.alert_cooldown:
                     alert_message = f"La tendencia para {coin_name} es {trend}."
+                    sound_file = "alert.wav"
+                    threading.Thread(target=play_sound, args=(sound_file,)).start()
                     QMessageBox.information(self, "Alerta de Tendencia", alert_message)
-                    sound_file = "alert.wav"  # Ruta al archivo de sonido
-                    play_sound(sound_file)
-                    self.alert_states[coin_name]["last_trend"] = trend  # Actualizar el estado de la alerta
+                    self.alert_states[coin_name]["last_trend"] = trend
                     self.alert_cooldown = True
-                    self.alert_cooldown_timer.start(60000)  # 60 segundos de enfriamiento
+                    self.alert_cooldown_timer.start(60000)
 
                 # Botón para agregar indicador (solo si hay menos de 6 indicadores)
                 if len(self.indicators) < 6:
