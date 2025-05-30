@@ -2,7 +2,9 @@ import json
 import sys
 import threading
 from datetime import datetime, timedelta
-
+import time
+from datetime import datetime, timezone
+from collections import defaultdict  # Añadir esta línea
 import pandas as pd
 import pandas_ta as ta
 import pygame
@@ -12,6 +14,14 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import QApplication, QMainWindow, QTabWidget, QWidget, QVBoxLayout, QPushButton, QTableWidget, \
     QTableWidgetItem, QLineEdit, QComboBox, QMessageBox, QHeaderView, QLabel
 
+
+COLORS = {
+    "verde": "\033[92m",
+    "rojo": "\033[91m",
+    "reset": "\033[0m",
+    "azul": "\033[94m",
+    "amarillo": "\033[93m"
+}
 pygame.mixer.init()
 
 def play_sound(sound_file):
@@ -21,6 +31,67 @@ def play_sound(sound_file):
     except Exception as e:
         QMessageBox.warning(None, "Error de sonido", f"No se pudo reproducir el sonido: {str(e)}")
 
+
+def format_utc_to_local(utc_dt, interval=None):
+    if interval is None:
+        local_dt = utc_dt.astimezone(timezone(timedelta(hours=-6)))
+        return local_dt.strftime('%Y-%m-%d %H:%M:%S')
+
+    # Diccionario con los ajustes para cada intervalo
+    interval_adjustments = {
+        "Min5": timedelta(minutes=5),
+        "Min15": timedelta(minutes=15),
+        "Min30": timedelta(minutes=30),
+        "Min60": timedelta(hours=1),
+        "Hour4": timedelta(hours=4),
+        "Day1": timedelta(days=1)
+    }
+
+    # Obtener el ajuste correspondiente al intervalo o usar 0 si no está definido
+    adjustment = interval_adjustments.get(interval, timedelta(0))
+    close_time = utc_dt + adjustment
+
+    local_dt = close_time.astimezone(timezone(timedelta(hours=-6)))
+    return local_dt.strftime('%Y-%m-%d %H:%M:%S')
+
+class AlertButton(QPushButton):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.states = [None, "bullish", "bearish"]  # Estados: Off -> Alcista -> Bajista
+        self.current_state = 0  # Comienza en Off (None)
+        self.updateText()
+        self.clicked.connect(self.cycleState)
+        self.setStyleSheet("""
+                    QPushButton {
+                        border: none;
+                        padding: 2px;
+                        border-radius: 2px;
+                        min-width: 60px;
+                        max-width: 60px;
+                        max-height: 20px;
+                        margin: 0px;
+                        text-align: left;
+                    }
+                """)
+
+    def cycleState(self):
+        self.current_state = (self.current_state + 1) % len(self.states)
+        self.updateText()
+
+    def updateText(self):
+        state = self.states[self.current_state]
+        if state is None:
+            self.setText("⚪ Off")
+            self.setStyleSheet("QPushButton { background-color: #444; color: white; }")
+        elif state == "bullish":
+            self.setText("🟢 Alcista")
+            self.setStyleSheet("QPushButton { background-color: #1b5e20; color: white; }")
+        else:  # bearish
+            self.setText("🔴 Bajista")
+            self.setStyleSheet("QPushButton { background-color: #b71c1c; color: white; }")
+
+    def getState(self):
+        return self.states[self.current_state]
 
 class CryptoMonitorApp(QMainWindow):
     def __init__(self):
@@ -130,6 +201,8 @@ class CryptoMonitorApp(QMainWindow):
         self.load_coins_from_file()  # Cargar monedas al iniciar
         self.load_indicators_from_file()  # Cargar indicadores al iniciar
 
+        self.alert_states = defaultdict(lambda: {"last_trend": None})
+
     def add_coin_to_monitoring(self, coin):
         if not any(c["name"] == coin for c in self.coins):  # Evitar duplicados
             self.coins.append({"name": coin})
@@ -179,33 +252,44 @@ class CryptoMonitorApp(QMainWindow):
                 self.monitoring_table.setCellWidget(0, 0, widget)
                 return
 
-            # Caso 2: Hay monedas, pero no indicadores
             if self.coins and not self.indicators:
                 self.monitoring_table.setRowCount(len(self.coins))
-                self.monitoring_table.setColumnCount(4)
-                self.monitoring_table.setHorizontalHeaderLabels(["", "", "Moneda", "Agregar Indicador"])
+                # Cambiar de 4 a 3 columnas
+                self.monitoring_table.setColumnCount(3)
+                # Quitar "Agregar Indicador" de las etiquetas
+                self.monitoring_table.setHorizontalHeaderLabels(["", "", "Moneda"])
 
                 for row, coin in enumerate(self.coins):
-                    # Botón de eliminar
+                    # Botón de eliminar (más pequeño)
                     delete_button = QPushButton()
                     delete_button.setIcon(qta.icon("mdi.delete"))
                     delete_button.clicked.connect(lambda _, r=row: self.remove_coin(r))
+                    delete_button.setStyleSheet("""
+                        QPushButton {
+                            max-width: 20px;
+                            max-height: 20px;
+                            padding: 2px;
+                            margin: 0px;
+                        }
+                    """)
                     self.monitoring_table.setCellWidget(row, 0, delete_button)
 
-                    # Botón para abrir web
+                    # Botón para abrir web (más pequeño)
                     web_button = QPushButton()
                     web_button.setIcon(qta.icon("mdi.web"))
                     web_button.clicked.connect(lambda _, c=coin["name"]: self.open_web_page(c))
+                    web_button.setStyleSheet("""
+                        QPushButton {
+                            max-width: 20px;
+                            max-height: 20px;
+                            padding: 2px;
+                            margin: 0px;
+                        }
+                    """)
                     self.monitoring_table.setCellWidget(row, 1, web_button)
 
                     # Nombre de la moneda
                     self.monitoring_table.setItem(row, 2, QTableWidgetItem(coin["name"]))
-
-                    # Botón para agregar indicador
-                    add_indicator_button = QPushButton("Agregar indicador")
-                    add_indicator_button.clicked.connect(
-                        lambda: self.tab_widget.setCurrentIndex(2))  # Ir a configuración
-                    self.monitoring_table.setCellWidget(row, 3, add_indicator_button)
                 return
 
             # Caso 3: Hay indicadores, pero no hay monedas
@@ -224,118 +308,265 @@ class CryptoMonitorApp(QMainWindow):
                 return
 
             # Caso 4: Hay monedas e indicadores
-            num_columns = 4 + len(self.indicators) + 1  # Moneda, Acción, Indicadores, Tendencia, Agregar Indicador
+            num_columns = 5 + len(self.indicators)  # Moneda, Eliminar, Web, Alerta, Indicadores, Tendencia
             self.monitoring_table.setRowCount(len(self.coins))
             self.monitoring_table.setColumnCount(num_columns)
 
-            # Configuración de cabeceras
-            header_labels = ["", "", "Moneda"] + [f"{ind['name']} ({ind['timeframe']})" for ind in self.indicators] + [
-                "Tendencia", "Agregar Indicador"]
+            # Configuración de cabeceras (nuevo orden)
+            header_labels = ["", "", "Alerta", "Moneda"] + [f"{ind['name']} ({ind['timeframe']})" for ind in
+                                                            self.indicators] + [
+                                "Tendencia"]
             self.monitoring_table.setHorizontalHeaderLabels(header_labels)
 
+            self.monitoring_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)
+            self.monitoring_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Fixed)
+            self.monitoring_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Fixed)
+            self.monitoring_table.setColumnWidth(0, 22)  # Columna del botón eliminar
+            self.monitoring_table.setColumnWidth(1, 22)  # Columna del botón web
+            self.monitoring_table.setColumnWidth(2, 65)  # Columna del botón alerta
+
             for row, coin in enumerate(self.coins):
-                # Botón de eliminar
-                delete_button = QPushButton()
-                delete_button.setIcon(qta.icon("mdi.delete"))
-                delete_button.clicked.connect(lambda _, r=row: self.remove_coin(r))
-                self.monitoring_table.setCellWidget(row, 0, delete_button)
+                try:
+                    # Botón de eliminar (más pequeño)
+                    delete_button = QPushButton()
+                    delete_button.setIcon(qta.icon("mdi.delete"))
+                    delete_button.clicked.connect(lambda _, r=row: self.remove_coin(r))
+                    delete_button.setStyleSheet("""
+                        QPushButton {
+                            max-width: 20px;
+                            max-height: 20px;
+                            padding: 2px;
+                            margin: 0px;
+                        }
+                    """)
+                    self.monitoring_table.setCellWidget(row, 0, delete_button)
 
-                # Botón para abrir web
-                web_button = QPushButton()
-                web_button.setIcon(qta.icon("mdi.web"))
-                web_button.clicked.connect(lambda _, c=coin["name"]: self.open_web_page(c))
-                self.monitoring_table.setCellWidget(row, 1, web_button)
+                    # Botón para abrir web (más pequeño)
+                    web_button = QPushButton()
+                    web_button.setIcon(qta.icon("mdi.web"))
+                    web_button.clicked.connect(lambda _, c=coin["name"]: self.open_web_page(c))
+                    web_button.setStyleSheet("""
+                        QPushButton {
+                            max-width: 20px;
+                            max-height: 20px;
+                            padding: 2px;
+                            margin: 0px;
+                        }
+                    """)
+                    self.monitoring_table.setCellWidget(row, 1, web_button)
 
-                # Nombre de la moneda
-                self.monitoring_table.setItem(row, 2, QTableWidgetItem(coin["name"]))
+                    # Botón de alerta (nuevo orden)
+                    alert_button = AlertButton()
+                    alert_button.clicked.connect(lambda _, c=coin["name"]: self.on_alert_change(c, alert_button))
+                    self.monitoring_table.setCellWidget(row, 2, alert_button)
 
-                # Cálculo de indicadores
-                indicator_states = []
-                for col, indicator in enumerate(self.indicators, start=3):
-                    interval = self.map_interval(indicator["timeframe"])
-                    if not interval:
-                        self.monitoring_table.setItem(row, col, QTableWidgetItem("Intervalo Inválido"))
-                        indicator_states.append("Error")
-                        continue
+                    # Nombre de la moneda
+                    self.monitoring_table.setItem(row, 3, QTableWidgetItem(coin["name"]))
 
-                    coin_data = self.fetch_historical_data(coin["name"], interval)
-                    if coin_data is None or coin_data.empty:
-                        self.monitoring_table.setItem(row, col, QTableWidgetItem("Error"))
-                        indicator_states.append("Error")
-                        continue
+                    # Cálculo de indicadores
+                    indicator_states = []
+                    for col, indicator in enumerate(self.indicators, start=4):
+                        try:
+                            interval = self.map_interval(indicator.get("timeframe"))
+                            if not interval:
+                                self.monitoring_table.setItem(row, col, QTableWidgetItem("Intervalo Inválido"))
+                                indicator_states.append("Error")
+                                continue
 
-                    if indicator["name"] == "EMA":
-                        period = int(indicator["parameters"].split(": ")[1])
-                        ema = ta.ema(coin_data["close"], length=period)
-                        state = "Alcista" if coin_data["close"].iloc[-2] > ema.iloc[-2] else "Bajista"
-                    elif indicator["name"] == "MACD":
-                        fast, slow, signal = map(int, [x.split(": ")[1] for x in indicator["parameters"].split(", ")])
-                        macd = ta.macd(coin_data["close"], fast=fast, slow=slow, signal=signal)
-                        state = "Alcista" if macd["MACD_12_26_9"].iloc[-2] > macd["MACDs_12_26_9"].iloc[-2] else "Bajista"
+                            coin_data = self.fetch_historical_data(coin["name"], interval)
+                            if coin_data is None or coin_data.empty:
+                                self.monitoring_table.setItem(row, col, QTableWidgetItem("Error"))
+                                indicator_states.append("Error")
+                                continue
+
+                            if indicator.get("name") == "EMA":
+                                params = indicator.get("parameters", "").split(": ")
+                                if len(params) > 1:
+                                    period = int(params[1])
+                                    ema = ta.ema(coin_data["close"], length=period)
+                                    state = "Alcista" if coin_data["close"].iloc[-2] > ema.iloc[-2] else "Bajista"
+                                else:
+                                    state = "Error"
+                            elif indicator.get("name") == "MACD":
+                                try:
+                                    params = [x.split(": ")[1] for x in indicator.get("parameters", "").split(", ")]
+                                    fast, slow, signal = map(int, params)
+                                    macd = ta.macd(coin_data["close"], fast=fast, slow=slow, signal=signal)
+                                    state = "Alcista" if macd["MACD_12_26_9"].iloc[-2] > macd["MACDs_12_26_9"].iloc[
+                                        -2] else "Bajista"
+                                except:
+                                    state = "Error"
+                            else:
+                                state = "Error"
+
+                            self.monitoring_table.setItem(row, col, QTableWidgetItem(state))
+                            indicator_states.append(state)
+                        except Exception as e:
+                            print(f"Error procesando indicador: {str(e)}")
+                            self.monitoring_table.setItem(row, col, QTableWidgetItem("Error"))
+                            indicator_states.append("Error")
+
+                    # Determinar tendencia general
+                    if all(state == "Alcista" for state in indicator_states):
+                        trend = "Alcista"
+                    elif all(state == "Bajista" for state in indicator_states):
+                        trend = "Bajista"
                     else:
-                        state = "Error"
+                        trend = "Neutral"
 
-                    self.monitoring_table.setItem(row, col, QTableWidgetItem(state))
-                    indicator_states.append(state)
+                    # Mostrar tendencia
+                    self.monitoring_table.setItem(row, num_columns - 1, QTableWidgetItem(trend))
 
-                # Determinar tendencia general
-                if all(state == "Alcista" for state in indicator_states):
-                    trend = "Alcista"
-                elif all(state == "Bajista" for state in indicator_states):
-                    trend = "Bajista"
-                else:
-                    trend = "Neutral"
+                    # Procesar alertas
+                    self.process_alert(coin["name"], trend, alert_button)
 
-                # Mostrar tendencia
-                self.monitoring_table.setItem(row, num_columns - 2, QTableWidgetItem(trend))
-
-                # Verificar si la tendencia ha cambiado y si el enfriamiento está activo
-                coin_name = coin["name"]
-                if coin_name not in self.alert_states:
-                    self.alert_states[coin_name] = {"last_trend": None}
-
-                last_trend = self.alert_states[coin_name]["last_trend"]
-                print(f"Tendencia para {coin_name}: {trend} (Última tendencia: {last_trend})")  # Depuración
-                if trend != last_trend and trend in ["Alcista", "Bajista"] and not self.alert_cooldown:
-                    alert_message = f"La tendencia para {coin_name} es {trend}."
-                    sound_file = "alert.wav"
-                    threading.Thread(target=play_sound, args=(sound_file,)).start()
-                    QMessageBox.information(self, "Alerta de Tendencia", alert_message)
-                    self.alert_states[coin_name]["last_trend"] = trend
-                    self.alert_cooldown = True
-                    self.alert_cooldown_timer.start(60000)
-
-                # Botón para agregar indicador (solo si hay menos de 6 indicadores)
-                if len(self.indicators) < 6:
-                    add_indicator_button = QPushButton("Agregar indicador")
-                    add_indicator_button.clicked.connect(
-                        lambda: self.tab_widget.setCurrentIndex(2))  # Ir a configuración
-                    self.monitoring_table.setCellWidget(row, num_columns - 1, add_indicator_button)
-                else:
-                    max_label = QLabel("Máximo alcanzado")
-                    max_label.setAlignment(Qt.AlignCenter)
-                    self.monitoring_table.setCellWidget(row, num_columns - 1, max_label)
+                except Exception as e:
+                    print(f"Error en el procesamiento de la fila {row}: {str(e)}")
 
         except Exception as e:
-            self.show_message("Error", f"Se produjo un error al actualizar la tabla: {str(e)}")
+            print(f"Error general en update_table: {str(e)}")
 
-    def fetch_historical_data(self, coin, interval):
+    def process_alert(self, coin_name, trend, alert_button):
         try:
-            url = f"https://contract.mexc.com/api/v1/contract/kline/{coin}?interval={interval}&limit=500"
-            response = requests.get(url)
-            if response.status_code == 200:
-                data = response.json()
-                if data.get("success") and "data" in data:
-                    df = pd.DataFrame({
-                        "timestamp": data["data"]["time"],
-                        "close": data["data"]["close"]
-                    })
-                    df["timestamp"] = pd.to_datetime(df["timestamp"], unit='s')
-                    df["close"] = df["close"].astype(float)
-                    return df
-            return None
+            if coin_name not in self.alert_states:
+                self.alert_states[coin_name] = {"last_trend": None}
+
+            last_trend = self.alert_states[coin_name].get("last_trend")
+            current_alert_state = alert_button.getState()
+
+            if (trend != last_trend and
+                    ((current_alert_state == "bullish" and trend == "Alcista") or
+                     (current_alert_state == "bearish" and trend == "Bajista")) and
+                    not self.alert_cooldown):
+                alert_message = f"La tendencia para {coin_name} es {trend}."
+                sound_file = "alert.wav"
+                threading.Thread(target=play_sound, args=(sound_file,)).start()
+                QMessageBox.information(self, "Alerta de Tendencia", alert_message)
+                self.alert_cooldown = True
+                self.alert_cooldown_timer.start(60000)
+
+            self.alert_states[coin_name]["last_trend"] = trend
+
         except Exception as e:
-            return None
+            print(f"Error al procesar alerta para {coin_name}: {str(e)}")
+            self.alert_states[coin_name] = {"last_trend": None}
+
+    def on_alert_change(self, coin, button):
+        self.alert_states[coin] = button.getState()
+        state_text = {None: "desactivada", "bullish": "alcista", "bearish": "bajista"}
+        print(f"Alerta para {coin} cambiada a: {state_text[button.getState()]}")
+
+    def fetch_historical_data(self, coin, interval, retry_count=3):
+
+        url = f"https://contract.mexc.com/api/v1/contract/kline/{coin}?interval={interval}&limit=100"
+
+        for attempt in range(retry_count):
+            try:
+                print(
+                    f"{COLORS['azul']}🔄 Intentando descargar {coin} ({interval}) - Intento {attempt + 1}{COLORS['reset']}")
+
+                response = requests.get(url, timeout=30)
+                if response.status_code != 200:
+                    print(f"{COLORS['rojo']}❌ Error {response.status_code} para {coin} ({interval}){COLORS['reset']}")
+                    if attempt < retry_count - 1:
+                        time.sleep(1)
+                        continue
+                    return None
+
+                data = response.json()
+                if not data.get("success") or "data" not in data:
+                    print(f"{COLORS['rojo']}❌ Sin datos para {coin} ({interval}){COLORS['reset']}")
+                    if attempt < retry_count - 1:
+                        time.sleep(1)
+                        continue
+                    return None
+
+                # Convertir los datos a DataFrame
+                df = pd.DataFrame({
+                    "timestamp": pd.to_datetime([t for t in data["data"]["time"]], unit='s', utc=True),
+                    "open": pd.to_numeric(data["data"]["open"], errors='coerce'),
+                    "high": pd.to_numeric(data["data"]["high"], errors='coerce'),
+                    "low": pd.to_numeric(data["data"]["low"], errors='coerce'),
+                    "close": pd.to_numeric(data["data"]["close"], errors='coerce'),
+                    "volume": pd.to_numeric(data["data"]["vol"], errors='coerce')
+                })
+
+                if df.empty:
+                    print(f"{COLORS['rojo']}❌ No hay datos disponibles para {coin} ({interval}){COLORS['reset']}")
+                    return None
+
+                # Calcular el inicio de la vela actual
+                now = datetime.now(timezone.utc)
+                interval_minutes = {
+                    "Min5": 5,
+                    "Min15": 15,
+                    "Min60": 60,
+                    "Hour4": 240,
+                    "Day1": 1440
+                }.get(interval)
+
+                if interval_minutes is None:
+                    print(f"{COLORS['rojo']}❌ Intervalo inválido: {interval}{COLORS['reset']}")
+                    return None
+
+                current_candle_start = now.replace(
+                    minute=now.minute - (now.minute % interval_minutes),
+                    second=0,
+                    microsecond=0
+                )
+
+                # Verificar si la última vela en los datos está cerrada
+                latest_timestamp = df["timestamp"].iloc[-1]
+
+                if latest_timestamp >= current_candle_start:
+                    print(f"{COLORS['amarillo']}⚠️ Detectada vela incompleta en {coin} ({interval}){COLORS['reset']}")
+                    df = df.iloc[:-1]
+
+                    if df.empty:
+                        print(f"{COLORS['rojo']}❌ No hay suficientes datos para {coin} ({interval}){COLORS['reset']}")
+                        return None
+
+                last_candle_time = df["timestamp"].iloc[-1]
+                local_close_time = format_utc_to_local(last_candle_time, interval)
+                print(f"{COLORS['verde']}✅ {coin} ({interval}) procesado correctamente - "
+                      f"Última vela cerrada: {local_close_time}{COLORS['reset']}")
+
+                return df
+
+            except Exception as e:
+                print(
+                    f"{COLORS['rojo']}Error en {coin} ({interval}): {str(e)} - Intento {attempt + 1}{COLORS['reset']}")
+                if attempt < retry_count - 1:
+                    time.sleep(1)
+                    continue
+
+        return None
+
+    def fetch_all_data(self, symbols, timeframes):
+        if not symbols or not timeframes:
+            self.show_message("Error", "Por favor, agrega monedas e indicadores antes de descargar datos.")
+            return {}
+        print(f"\n{COLORS['azul']}🚀 Iniciando descarga de datos para {len(symbols)} símbolos{COLORS['reset']}")
+        start_time = datetime.now()
+
+        results = {}
+        for symbol in symbols:
+            results[symbol] = {}
+            for timeframe in timeframes:
+                interval = self.map_interval(timeframe)
+                if interval:
+                    data = self.fetch_historical_data(symbol, interval)
+                    results[symbol][timeframe] = data
+                    if data is not None:
+                        print(f"{COLORS['verde']}✅ {symbol} ({timeframe}) procesado correctamente{COLORS['reset']}")
+                    else:
+                        print(f"{COLORS['rojo']}❌ Error procesando {symbol} ({timeframe}){COLORS['reset']}")
+
+        duration = (datetime.now() - start_time).total_seconds()
+        print(f"\n{COLORS['verde']}✨ Descarga completada en {duration:.2f} segundos{COLORS['reset']}")
+        print(f"{COLORS['verde']}📊 Total de requests: {len(symbols) * len(timeframes)}{COLORS['reset']}\n")
+
+        return results
 
     def save_indicator(self):
         if hasattr(self, "editing_row") and self.editing_row is not None:
@@ -539,10 +770,14 @@ class CryptoMonitorApp(QMainWindow):
             QMessageBox.Yes | QMessageBox.No
         )
         if confirm == QMessageBox.Yes:
-            self.indicators.pop(row)
-            self.update_indicator_table()
-            self.save_indicators_to_file()
-            self.update_table()
+            try:
+                if 0 <= row < len(self.indicators):
+                    self.indicators.pop(row)
+                    self.save_indicators_to_file()
+                    self.update_indicator_table()
+                    self.update_table()
+            except Exception as e:
+                self.show_message("Error", f"Error al eliminar el indicador: {str(e)}")
 
     def move_indicator_up(self, row):
         if row > 0:
@@ -617,36 +852,118 @@ class CryptoMonitorApp(QMainWindow):
         return mapping.get(interval)
 
     def get_time_to_next_candle(self, timeframe):
-        now = datetime.now()
-        if timeframe == "5m":
-            next_candle = now + timedelta(minutes=5 - now.minute % 5, seconds=-now.second,
-                                          microseconds=-now.microsecond)
-        elif timeframe == "15m":
-            next_candle = now + timedelta(minutes=15 - now.minute % 15, seconds=-now.second,
-                                          microseconds=-now.microsecond)
+        now = datetime.now(timezone.utc)  # Usar UTC
+        processing_delay = 5  # Segundos de delay para dar tiempo al exchange
+
+        if timeframe == "15m":
+            minutes_until_next = 15 - (now.minute % 15)
+            if minutes_until_next == 0:
+                minutes_until_next = 15
+            next_candle = now + timedelta(
+                minutes=minutes_until_next,
+                seconds=-now.second + processing_delay,
+                microseconds=-now.microsecond
+            )
         elif timeframe == "1h":
-            next_candle = now + timedelta(hours=1, minutes=-now.minute, seconds=-now.second,
-                                          microseconds=-now.microsecond)
-        elif timeframe == "4h":
-            next_candle = now + timedelta(hours=4 - now.hour % 4, minutes=-now.minute, seconds=-now.second,
-                                          microseconds=-now.microsecond)
-        elif timeframe == "1d":
-            next_candle = datetime.combine(now + timedelta(days=1), datetime.min.time())
+            next_candle = now + timedelta(
+                hours=1,
+                minutes=-now.minute,
+                seconds=-now.second + processing_delay,
+                microseconds=-now.microsecond
+            )
         else:
             return None
-        return (next_candle - now).total_seconds() * 1000  # Devuelve el tiempo en milisegundos
+
+        wait_time = (next_candle - now).total_seconds()
+        next_candle_local = format_utc_to_local(next_candle)
+        print(f"Próxima actualización de {timeframe} programada para: {next_candle_local}")
+        return wait_time * 1000  # Convertir a milisegundos
 
     def setup_timer_for_timeframe(self, timeframe):
         if timeframe in self.timers:
-            self.timers[timeframe].stop()  # Detener el temporizador si ya existía
+            self.timers[timeframe].stop()
 
         time_to_next_candle = self.get_time_to_next_candle(timeframe)
         if time_to_next_candle is not None:
             timer = QTimer(self)
             timer.setSingleShot(True)
-            timer.timeout.connect(lambda: self.handle_candle_close(timeframe))
+            timer.timeout.connect(lambda: self.update_timeframe_data(timeframe))
             timer.start(time_to_next_candle)
             self.timers[timeframe] = timer
+
+            next_update = datetime.now(timezone.utc) + timedelta(milliseconds=time_to_next_candle)
+            print(f"{COLORS['azul']}⏰ Próxima actualización de {timeframe}: "
+                  f"{format_utc_to_local(next_update)}{COLORS['reset']}")
+
+    def get_active_timeframes(self):
+        active_timeframes = set()
+        for indicator in self.indicators:
+            active_timeframes.add(indicator['timeframe'])
+        return sorted(list(active_timeframes))
+
+    def should_update_timeframe(self, timeframe):
+        now = datetime.now(timezone.utc)
+
+        if timeframe == "15m":
+            return now.minute % 15 == 0
+        elif timeframe == "1h":
+            return now.minute == 0
+        elif timeframe == "4h":
+            return now.hour % 4 == 0 and now.minute == 0
+        elif timeframe == "1d":
+            return now.hour == 0 and now.minute == 0
+
+        return False
+
+    def setup_timers(self):
+        """
+        Configura los temporizadores solo para las temporalidades activas
+        """
+        # Detener todos los timers existentes
+        for timer in self.timers.values():
+            timer.stop()
+        self.timers.clear()
+
+        # Obtener temporalidades activas
+        active_timeframes = self.get_active_timeframes()
+
+        for timeframe in active_timeframes:
+            time_to_next = self.get_time_to_next_candle(timeframe)
+            if time_to_next is not None:
+                print(f"{COLORS['azul']}⏰ Próxima actualización de {timeframe}: "
+                      f"en {time_to_next / 1000:.0f} segundos{COLORS['reset']}")
+
+                timer = QTimer(self)
+                timer.setSingleShot(True)
+                timer.timeout.connect(lambda tf=timeframe: self.update_timeframe_data(tf))
+                timer.start(time_to_next)
+                self.timers[timeframe] = timer
+
+    def update_timeframe_data(self, timeframe):
+        if not self.should_update_timeframe(timeframe):
+            print(f"{COLORS['amarillo']}⚠️ Omitiendo actualización innecesaria de {timeframe}{COLORS['reset']}")
+            return
+
+        print(f"{COLORS['azul']}🔄 Actualizando datos para {timeframe}{COLORS['reset']}")
+
+        interval = self.map_interval(timeframe)
+        if not interval:
+            print(f"{COLORS['rojo']}❌ Intervalo inválido: {timeframe}{COLORS['reset']}")
+            return
+
+        for coin in self.coins:
+            df = self.fetch_historical_data(coin["name"], interval)
+            if df is not None:
+                print(f"{COLORS['verde']}✅ Datos actualizados para {coin['name']} ({timeframe}){COLORS['reset']}")
+            else:
+                print(f"{COLORS['rojo']}❌ Error actualizando datos para {coin['name']} ({timeframe}){COLORS['reset']}")
+
+        # Actualizar la tabla
+        self.update_table()
+
+        # Configurar el próximo timer para este timeframe
+        self.setup_timer_for_timeframe(timeframe)
+
 
     def handle_candle_close(self, timeframe):
         relevant_indicators = [ind for ind in self.indicators if ind["timeframe"] == timeframe]
