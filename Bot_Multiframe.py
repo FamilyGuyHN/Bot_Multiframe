@@ -10,7 +10,7 @@ import qtawesome as qta
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QPushButton,
-    QTableWidget, QTableWidgetItem, QMessageBox, QHeaderView
+    QTableWidget, QTableWidgetItem, QMessageBox, QHeaderView, QSplitter
 )
 
 COLORS = {
@@ -25,15 +25,13 @@ def format_utc_to_local(utc_dt):
     try:
         if pd.isna(utc_dt):
             return "Invalid date"
-        if not hasattr(utc_dt, 'tzinfo') or utc_dt.tzinfo is None:
+        if isinstance(utc_dt, str):
+            utc_dt = pd.to_datetime(utc_dt)
+        if utc_dt.tzinfo is None:
             utc_dt = utc_dt.replace(tzinfo=timezone.utc)
-        local_dt = utc_dt.astimezone()
-        return local_dt.strftime('%Y-%m-%d %H:%M:%S')
+        return utc_dt.strftime('%H:%M:%S')  # Solo hora UTC
     except Exception as e:
-        print(f"Error en format_utc_to_local: {e}")
-        return str(utc_dt)
-
-
+        return "Hora inválida"
 
 class CryptoMonitorApp(QMainWindow):
     def __init__(self):
@@ -69,48 +67,49 @@ class CryptoMonitorApp(QMainWindow):
 
     def setup_ui(self):
         self.setWindowTitle("Monitor Futuros")
-        self.setGeometry(100, 100, 1000, 800)
+        self.setGeometry(100, 100, 600, 1200)
 
         main_widget = QWidget()
         self.setCentralWidget(main_widget)
         layout = QVBoxLayout(main_widget)
 
+        splitter = QSplitter(Qt.Vertical)
+        layout.addWidget(splitter)
+
         self.monitoring_table = QTableWidget()
         self.setup_monitoring_table()
         self.initialize_table_data()
-        layout.addWidget(self.monitoring_table)
+        splitter.addWidget(self.monitoring_table)
 
         self.alert_log = QTableWidget()
         self.setup_alert_log()
-        layout.addWidget(self.alert_log)
+        splitter.addWidget(self.alert_log)
 
         self.close_button = QPushButton("Cerrar Programa")
         self.close_button.clicked.connect(self.close)
         layout.addWidget(self.close_button)
 
     def setup_monitoring_table(self):
-        headers = ["", "Moneda", "EMA200(15m)", "EMA50(1h)", "Tendencia"]
+        headers = ["Moneda", "EMA21(15m)", "EMA50(1h)", "Tendencia"]
         self.monitoring_table.setColumnCount(len(headers))
         self.monitoring_table.setHorizontalHeaderLabels(headers)
+
         self.monitoring_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
 
     def setup_alert_log(self):
-        headers = ["Hora", "Moneda", "Mensaje"]
+        headers = ["", "Hora", "Moneda", "Mensaje"]
         self.alert_log.setColumnCount(len(headers))
         self.alert_log.setHorizontalHeaderLabels(headers)
-        self.alert_log.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self.alert_log.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
 
     def initialize_table_data(self):
         self.monitoring_table.setRowCount(len(self.coins))
         for row, coin in enumerate(self.coins):
-            web_button = QPushButton()
-            web_button.setIcon(qta.icon("mdi.web"))
-            web_button.clicked.connect(lambda _, c=coin: self.open_web_page(c))
-            web_button.setStyleSheet("QPushButton { max-width: 20px; max-height: 20px; padding: 2px; margin: 0px; }")
-            self.monitoring_table.setCellWidget(row, 0, web_button)
-            self.monitoring_table.setItem(row, 1, QTableWidgetItem(coin))
-            for col in range(2, 5):
+            self.monitoring_table.setItem(row, 0, QTableWidgetItem(coin))
+            for col in range(1, 4):
                 self.monitoring_table.setItem(row, col, QTableWidgetItem("Cargando..."))
+
+        self.monitoring_table.resizeColumnsToContents()
 
     def update_hourly_data(self):
         now = datetime.now(timezone.utc)
@@ -163,7 +162,7 @@ class CryptoMonitorApp(QMainWindow):
             if timeframe == "Min15":
                 if len(df) < 210:
                     return "Error"
-                ema = ta.ema(df["close"], length=200)
+                ema = ta.ema(df["close"], length=21)
             else:
                 if len(df) < 60:
                     return "Error"
@@ -178,25 +177,19 @@ class CryptoMonitorApp(QMainWindow):
 
     def update_row(self, row):
         coin = self.coins[row]
-        web_button = QPushButton()
-        web_button.setIcon(qta.icon("mdi.web"))
-        web_button.clicked.connect(lambda _, c=coin: self.open_web_page(c))
-        web_button.setStyleSheet("QPushButton { max-width: 20px; max-height: 20px; padding: 2px; margin: 0px; }")
-        self.monitoring_table.setCellWidget(row, 0, web_button)
-        self.monitoring_table.setItem(row, 1, QTableWidgetItem(coin))
+        self.monitoring_table.setItem(row, 0, QTableWidgetItem(coin))
 
         df_15m = self.fetch_historical_data(coin, "Min15")
         state_15m = self.calculate_indicators(df_15m, "Min15") if df_15m is not None else "Error"
-        self.monitoring_table.setItem(row, 2, QTableWidgetItem(state_15m))
+        self.monitoring_table.setItem(row, 1, QTableWidgetItem(state_15m))
 
         df_1h = self.hourly_data.get(coin)
         state_1h = self.calculate_indicators(df_1h, "Min60") if df_1h is not None else "Error"
-        self.monitoring_table.setItem(row, 3, QTableWidgetItem(state_1h))
+        self.monitoring_table.setItem(row, 2, QTableWidgetItem(state_1h))
 
         trend = "Alcista" if state_15m == "Alcista" and state_1h == "Alcista" else \
-                "Bajista" if state_15m == "Bajista" and state_1h == "Bajista" else "Neutral"
-
-        self.monitoring_table.setItem(row, 4, QTableWidgetItem(trend))
+            "Bajista" if state_15m == "Bajista" and state_1h == "Bajista" else "Neutral"
+        self.monitoring_table.setItem(row, 3, QTableWidgetItem(trend))
 
         if trend != self.previous_trends[coin]:
             self.previous_trends[coin] = trend
@@ -205,6 +198,7 @@ class CryptoMonitorApp(QMainWindow):
     def update_table(self):
         for row in range(len(self.coins)):
             self.update_row(row)
+            self.monitoring_table.resizeColumnsToContents()
 
     def setup_timers(self):
         self.timers["Min15"] = QTimer()
@@ -240,24 +234,65 @@ class CryptoMonitorApp(QMainWindow):
             self.calculate_next_hourly_update(self.timers[interval])
 
     def alert_trend_change(self, coin, new_trend):
+        if new_trend == "Neutral":
+            return
+
         current_time = datetime.now(timezone.utc)
         time_str = current_time.strftime('%Y-%m-%d %H:%M:%S')
-        message = f"{coin}: {new_trend}"
-        print(f"{COLORS['amarillo']}🔔 ¡Cambio de tendencia! {message}{COLORS['reset']}")
-        try:
-            if os.path.exists("alert.wav"):
-                pygame.mixer.music.load("alert.wav")
-                pygame.mixer.music.play()
-            else:
-                print("Archivo alert.wav no encontrado, se omite el sonido.")
-        except Exception as e:
-            print(f"Error reproduciendo sonido: {str(e)}")
+        print(f"{COLORS['amarillo']}🔔 ¡Cambio de tendencia! {coin}: {new_trend}{COLORS['reset']}")
+
+        # Solo genera alerta si se cumple la lógica específica
+        df_15m = self.fetch_historical_data(coin, "Min15")
+        df_1h = self.hourly_data.get(coin)
+
+        if df_15m is None or df_1h is None:
+            return
+
+        df_15m.ta.ema(length=21, append=True)
+        df_1h.ta.ema(length=50, append=True)
+
+        macd_15m = ta.macd(df_15m["close"])
+        df_15m["macd"] = macd_15m["MACD_12_26_9"]
+        df_15m["signal"] = macd_15m["MACDs_12_26_9"]
+
+        macd_1h = ta.macd(df_1h["close"])
+        df_1h["macd"] = macd_1h["MACD_12_26_9"]
+        df_1h["signal"] = macd_1h["MACDs_12_26_9"]
+
+        df_15m.dropna(inplace=True)
+        df_1h.dropna(inplace=True)
+
+        c15 = df_15m.iloc[-1]
+        c1h = df_1h.iloc[-1]
+
+        long_condition = c15["close"] > c15["EMA_21"] and c15["macd"] > c15["signal"] and \
+                         c1h["close"] > c1h["EMA_50"] and c1h["macd"] > c1h["signal"]
+
+        short_condition = c15["close"] < c15["EMA_21"] and c15["macd"] < c15["signal"] and \
+                          c1h["close"] < c1h["EMA_50"] and c1h["macd"] < c1h["signal"]
+
+        if not (long_condition or short_condition):
+            return
+
+        pygame.mixer.music.load("alert.wav") if os.path.exists("alert.wav") else None
+        pygame.mixer.music.play()
+
         self.alert_log.insertRow(0)
-        self.alert_log.setItem(0, 0, QTableWidgetItem(time_str))
-        self.alert_log.setItem(0, 1, QTableWidgetItem(coin))
-        self.alert_log.setItem(0, 2, QTableWidgetItem(f"Cambio a tendencia {new_trend}"))
+
+        web_button = QPushButton()
+        web_button.setIcon(qta.icon("mdi.web"))
+        web_button.setStyleSheet("QPushButton { max-width: 20px; max-height: 20px; padding: 2px; margin: 0px; }")
+        web_button.clicked.connect(lambda _, c=coin: self.open_web_page(c))
+        self.alert_log.setCellWidget(0, 0, web_button)
+
+        self.alert_log.setItem(0, 1, QTableWidgetItem(time_str))
+        self.alert_log.setItem(0, 2, QTableWidgetItem(coin))
+        self.alert_log.setItem(0, 3, QTableWidgetItem(f"Cambio a tendencia {new_trend}"))
+
         if self.alert_log.rowCount() > 50:
             self.alert_log.removeRow(50)
+
+        self.alert_log.resizeColumnsToContents()
 
     def open_web_page(self, symbol):
         import webbrowser
